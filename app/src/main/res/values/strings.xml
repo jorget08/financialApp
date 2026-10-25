@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Finanzas Pro AI</string>
+    <string name="widget_title">Finanzas: Registro Rápido</string>
+    <string name="widget_description">Registra gastos al instante sin abrir la app</string>
+</resources>

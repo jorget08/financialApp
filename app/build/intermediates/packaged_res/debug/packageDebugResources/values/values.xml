@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#0D1117</color>
+    <string name="app_name">Finanzas Pro AI</string>
+    <string name="widget_description">Registra gastos al instante sin abrir la app</string>
+    <string name="widget_title">Finanzas: Registro Rápido</string>
+    <style name="Theme.FinancialApp" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#0D1117</item>
+        <item name="android:navigationBarColor">#0D1117</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+    <style name="Theme.FinancialApp.Dialog" parent="android:Theme.Material.Light.Dialog.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowElevation">8dp</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:backgroundDimAmount">0.65</item>
+    </style>
+</resources>
