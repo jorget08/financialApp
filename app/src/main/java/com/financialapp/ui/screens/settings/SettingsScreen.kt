@@ -21,17 +21,26 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.financialapp.capture.AppPreferences
+import com.financialapp.data.backup.BackupManager
 import com.financialapp.data.remote.ai.AISettingsManager
+import com.financialapp.ui.components.financeFieldColors
 import com.financialapp.ui.theme.*
+import com.financialapp.util.FinancialMonth
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    settingsManager: AISettingsManager
+    settingsManager: AISettingsManager,
+    preferences: AppPreferences,
+    backupManager: BackupManager,
+    monthStartDay: Int,
+    onMonthStartDayChange: (Int) -> Unit,
+    onOpenCategories: () -> Unit
 ) {
     val context = LocalContext.current
-    var apiKey by remember { mutableStateOf(settingsManager.getApiKey()) }
     var selectedProvider by remember { mutableStateOf(settingsManager.getProvider()) }
+    var apiKey by remember { mutableStateOf(settingsManager.getApiKey(selectedProvider)) }
     var selectedModel by remember { mutableStateOf(settingsManager.getModelName()) }
     var isPasswordVisible by remember { mutableStateOf(false) }
 
@@ -70,7 +79,7 @@ fun SettingsScreen(
                         }
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Tu clave de API se almacena únicamente en el chip seguro de tu Xiaomi 14T Pro. Moneda configurada: Pesos Colombianos (COP).",
+                            text = "Tu clave se guarda cifrada en este teléfono. Al usar el asesor, el proveedor elegido recibe un resumen de tus cifras, nunca nombres de personas ni observaciones de movimientos.",
                             fontSize = 11.sp,
                             color = TextSecondary,
                             lineHeight = 15.sp
@@ -85,10 +94,7 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            val providers = listOf(
-                                AISettingsManager.PROVIDER_GEMINI,
-                                AISettingsManager.PROVIDER_OPENAI
-                            )
+                            val providers = AISettingsManager.PROVIDERS
                             for (prov in providers) {
                                 val isSelected = selectedProvider == prov
                                 Surface(
@@ -99,7 +105,8 @@ fun SettingsScreen(
                                         .height(38.dp),
                                     onClick = {
                                         selectedProvider = prov
-                                        selectedModel = if (prov == AISettingsManager.PROVIDER_GEMINI) "gemini-2.5-flash" else "gpt-4o"
+                                        apiKey = settingsManager.getApiKey(prov)
+                                        selectedModel = AISettingsManager.defaultModel(prov)
                                     }
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
@@ -112,21 +119,10 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.height(16.dp))
 
                         // Selección de Modelo
-                        Text("Modelo de IA Especializado", fontSize = 12.sp, color = TextSecondary)
+                        Text("Modelo", fontSize = 12.sp, color = TextSecondary)
                         Spacer(modifier = Modifier.height(6.dp))
 
-                        val availableModels = if (selectedProvider == AISettingsManager.PROVIDER_GEMINI) {
-                            listOf(
-                                "gemini-2.5-flash" to "Gemini 2.5 Flash (Recomendado: Rápido + Búsqueda)",
-                                "gemini-2.5-pro" to "Gemini 2.5 Pro (Máximo Razonamiento)",
-                                "gemini-2.0-flash" to "Gemini 2.0 Flash"
-                            )
-                        } else {
-                            listOf(
-                                "gpt-4o" to "GPT-4o (Omni)",
-                                "gpt-4o-mini" to "GPT-4o Mini"
-                            )
-                        }
+                        val availableModels = AISettingsManager.modelsFor(selectedProvider)
 
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             for ((modelId, modelLabel) in availableModels) {
@@ -137,12 +133,12 @@ fun SettingsScreen(
                                     border = if (isSelected) CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(AccentPurple)) else null,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(42.dp),
+                                        .heightIn(min = 42.dp),
                                     onClick = { selectedModel = modelId }
                                 ) {
                                     Row(
                                         modifier = Modifier
-                                            .fillMaxSize()
+                                            .fillMaxWidth()
                                             .padding(horizontal = 12.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
@@ -163,16 +159,26 @@ fun SettingsScreen(
                             }
                         }
 
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = selectedModel,
+                            onValueChange = { selectedModel = it },
+                            label = { Text("O escribe otro modelo") },
+                            singleLine = true,
+                            colors = financeFieldColors(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         // Campo de API Key
-                        Text("Tu API Key Privada", fontSize = 12.sp, color = TextSecondary)
+                        Text("Tu API Key de $selectedProvider", fontSize = 12.sp, color = TextSecondary)
                         Spacer(modifier = Modifier.height(6.dp))
                         OutlinedTextField(
                             value = apiKey,
                             onValueChange = { apiKey = it },
                             modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("Ej: AIzaSy... (Gemini) o sk-... (OpenAI)", color = TextTertiary, fontSize = 13.sp) },
+                            placeholder = { Text(AISettingsManager.keyHint(selectedProvider), color = TextTertiary, fontSize = 13.sp) },
                             visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                             trailingIcon = {
@@ -191,7 +197,7 @@ fun SettingsScreen(
 
                         Button(
                             onClick = {
-                                settingsManager.saveApiKey(apiKey)
+                                settingsManager.saveApiKey(selectedProvider, apiKey)
                                 settingsManager.saveProvider(selectedProvider)
                                 settingsManager.saveModelName(selectedModel)
                                 Toast.makeText(context, "Configuración guardada en Keystore seguro", Toast.LENGTH_SHORT).show()
@@ -207,6 +213,70 @@ fun SettingsScreen(
                             Text("Guardar Configuración Segura", fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+            }
+
+            item { CaptureCard(preferences) }
+
+            item { BackupCard(backupManager) }
+
+            // Mes financiero: día en que empieza el mes (día de pago)
+            item {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = DarkSurface,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Text(
+                            text = "Mi mes empieza el día",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = TextPrimary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Ponlo en el día que te pagan. Lo que registres desde ese día cuenta para el mes siguiente.",
+                            fontSize = 11.sp,
+                            color = TextSecondary,
+                            lineHeight = 15.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            FilledTonalButton(
+                                onClick = { onMonthStartDayChange(monthStartDay - 1) },
+                                enabled = monthStartDay > 1
+                            ) { Text("−", fontSize = 18.sp) }
+                            Text(
+                                text = monthStartDay.toString(),
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary,
+                                modifier = Modifier.padding(horizontal = 24.dp)
+                            )
+                            FilledTonalButton(
+                                onClick = { onMonthStartDayChange(monthStartDay + 1) },
+                                enabled = monthStartDay < FinancialMonth.MAX_START_DAY
+                            ) { Text("+", fontSize = 18.sp) }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Mes actual: ${FinancialMonth.currentPeriodLabel(monthStartDay)}",
+                            fontSize = 12.sp,
+                            color = AccentPrimary,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
+            item {
+                OutlinedButton(onClick = onOpenCategories, modifier = Modifier.fillMaxWidth()) {
+                    Text("Administrar categorías", color = TextPrimary)
                 }
             }
 

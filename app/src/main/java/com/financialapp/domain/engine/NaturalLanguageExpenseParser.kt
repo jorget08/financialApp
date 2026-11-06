@@ -33,7 +33,7 @@ object NaturalLanguageExpenseParser {
     )
 
     private val incomeRegex = Regex(
-        """(?:entr[oó]|cobr[eé]|ingres[oó]|recib[ií]|sueldo|transferencia|quincena)\s*(?:\$|cop)?\s*(\d+(?:[.,]\d+)?\s*(?:k|mil|lucas|m|millones)?)\s*(?:de|en|por)?\s*(.*)""",
+        """(?:entr(?:[oó]|aron)|cobr[eé]|ingres[oó]|recib[ií]|sueldo|transferencia|quincena)\s*(?:\$|cop)?\s*(\d+(?:[.,]\d+)?\s*(?:k|mil|lucas|m|millones)?)\s*(?:de|en|por)?\s*(.*)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -121,7 +121,7 @@ object NaturalLanguageExpenseParser {
         }
     }
 
-    private fun categorizeExpense(concept: String): String {
+    fun categorizeExpense(concept: String): String {
         val lower = concept.lowercase()
         return when {
             lower.containsAny("luz", "agua", "internet", "gas", "telefono", "celular", "arriendo", "alquiler", "administracion", "claro", "tigo", "movistar", "epm", "enel", "acueducto", "factura") -> "Casa y Servicios"
@@ -133,7 +133,7 @@ object NaturalLanguageExpenseParser {
         }
     }
 
-    private fun categorizeIncome(concept: String): String {
+    fun categorizeIncome(concept: String): String {
         val lower = concept.lowercase()
         return when {
             lower.containsAny("sueldo", "salario", "quincena", "nomina", "pago") -> "Sueldo / Salario"

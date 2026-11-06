@@ -4,17 +4,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,11 +20,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.financialapp.data.TransactionEdit
 import com.financialapp.data.local.dao.TransactionWithCategory
+import com.financialapp.data.local.entities.AccountEntity
 import com.financialapp.data.local.entities.CategoryEntity
+import com.financialapp.data.local.entities.MovementType
+import com.financialapp.ui.components.EditTransactionDialog
+import com.financialapp.ui.navigation.ToolRoute
 import com.financialapp.ui.theme.*
 import com.financialapp.util.CurrencyFormatter
 import java.text.SimpleDateFormat
@@ -38,11 +40,17 @@ import java.util.Locale
 fun HomeScreen(
     recentTransactions: List<TransactionWithCategory>,
     categories: List<CategoryEntity>,
+    accounts: List<AccountEntity>,
     totalIncome: Double,
     totalExpenses: Double,
+    totalSaved: Double,
+    pendingCount: Int,
+    periodLabel: String,
     onQuickExpenseClick: () -> Unit,
     onQuickIncomeClick: () -> Unit,
-    onUpdateTransaction: (id: String, amount: Double, categoryId: String, note: String) -> Unit,
+    onOpenExpenses: () -> Unit,
+    onOpenRoute: (String) -> Unit,
+    onUpdateTransaction: (id: String, edit: TransactionEdit) -> Unit,
     onDeleteTransaction: (id: String) -> Unit
 ) {
     val netBalance = totalIncome - totalExpenses
@@ -79,7 +87,7 @@ fun HomeScreen(
                 ) {
                     Column(modifier = Modifier.padding(20.dp)) {
                         Text(
-                            text = "Balance Neto del Mes",
+                            text = "Balance Neto • $periodLabel",
                             style = MaterialTheme.typography.labelMedium,
                             color = TextSecondary
                         )
@@ -140,6 +148,33 @@ fun HomeScreen(
                                 }
                             }
                         }
+
+                        // El ahorro no es un gasto, pero esa plata ya no está disponible
+                        if (totalSaved > 0) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                "Apartado a ahorro: ${CurrencyFormatter.format(totalSaved)} • Disponible: ${CurrencyFormatter.format(netBalance - totalSaved)}",
+                                fontSize = 12.sp,
+                                color = TextSecondary
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Movimientos detectados en notificaciones
+            if (pendingCount > 0) {
+                item {
+                    Button(
+                        onClick = { onOpenRoute(ToolRoute.PENDING) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentOrange)
+                    ) {
+                        Text(
+                            if (pendingCount == 1) "1 movimiento por confirmar" else "$pendingCount movimientos por confirmar",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -174,6 +209,49 @@ fun HomeScreen(
                         Icon(Icons.Default.Add, contentDescription = null)
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("+ Ingreso (1s)", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    }
+                }
+            }
+
+            // Acceso a Gastos por Categoría y Búsqueda
+            item {
+                OutlinedButton(
+                    onClick = onOpenExpenses,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = AccentBlue)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Gastos por categoría y búsqueda", color = TextPrimary)
+                }
+            }
+
+            // Herramientas
+            item {
+                val tools = listOf(
+                    "Cuentas" to ToolRoute.ACCOUNTS,
+                    "Préstamos" to ToolRoute.LOANS,
+                    "Presupuestos" to ToolRoute.BUDGETS,
+                    "Pagos fijos" to ToolRoute.BILLS,
+                    "Metas" to ToolRoute.GOALS,
+                    "Revisión" to ToolRoute.REVIEW
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    tools.chunked(3).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            row.forEach { (label, route) ->
+                                Surface(
+                                    onClick = { onOpenRoute(route) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = DarkSurface,
+                                    modifier = Modifier.weight(1f).height(44.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(label, fontSize = 12.sp, color = TextPrimary, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -238,10 +316,11 @@ fun HomeScreen(
     transactionToEdit?.let { item ->
         EditTransactionDialog(
             transaction = item,
-            availableCategories = categories.filter { it.type == item.type },
+            categories = categories,
+            accounts = accounts,
             onDismiss = { transactionToEdit = null },
-            onSave = { updatedAmount, updatedCatId, updatedNote ->
-                onUpdateTransaction(item.id, updatedAmount, updatedCatId, updatedNote)
+            onSave = { edit ->
+                onUpdateTransaction(item.id, edit)
                 transactionToEdit = null
             },
             onDelete = {
@@ -257,7 +336,8 @@ fun TransactionRowItem(
     item: TransactionWithCategory,
     onClick: () -> Unit
 ) {
-    val isExpense = item.type == "EXPENSE"
+    val isOutflow = MovementType.isOutflow(item.type, item.amount)
+    val isMovedMoney = item.type != MovementType.EXPENSE && item.type != MovementType.INCOME
     val dateFormatter = remember { SimpleDateFormat("dd MMM, hh:mm a", Locale("es", "CO")) }
 
     Surface(
@@ -292,7 +372,7 @@ fun TransactionRowItem(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = item.note?.ifBlank { item.categoryName } ?: item.categoryName,
+                    text = item.note?.ifBlank { null } ?: item.personName ?: item.categoryName,
                     color = TextPrimary,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 14.sp,
@@ -300,7 +380,7 @@ fun TransactionRowItem(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = item.categoryName,
+                        text = item.personName?.let { "${item.categoryName} • $it" } ?: item.categoryName,
                         color = TextSecondary,
                         fontSize = 11.sp
                     )
@@ -313,6 +393,19 @@ fun TransactionRowItem(
                             Text(
                                 text = "Widget",
                                 color = AccentBlue,
+                                fontSize = 9.sp,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            )
+                        }
+                    } else if (item.source == "NOTIFICATION") {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = AccentOrange.copy(alpha = 0.2f)
+                        ) {
+                            Text(
+                                text = "Auto",
+                                color = AccentOrange,
                                 fontSize = 9.sp,
                                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                             )
@@ -336,8 +429,12 @@ fun TransactionRowItem(
 
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = CurrencyFormatter.formatWithSign(item.amount, isExpense),
-                    color = if (isExpense) AccentRed else AccentPrimaryLight,
+                    text = CurrencyFormatter.formatWithSign(kotlin.math.abs(item.amount), isOutflow),
+                    color = when {
+                        isMovedMoney -> AccentBlue
+                        isOutflow -> AccentRed
+                        else -> AccentPrimaryLight
+                    },
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
                 )
@@ -349,98 +446,4 @@ fun TransactionRowItem(
             }
         }
     }
-}
-
-/**
- * Diálogo interactivo para editar descripción, monto o categoría de un gasto ya registrado (Requerimiento 7)
- */
-@Composable
-fun EditTransactionDialog(
-    transaction: TransactionWithCategory,
-    availableCategories: List<CategoryEntity>,
-    onDismiss: () -> Unit,
-    onSave: (amount: Double, categoryId: String, note: String) -> Unit,
-    onDelete: () -> Unit
-) {
-    var amountText by remember { mutableStateOf(transaction.amount.toLong().toString()) }
-    var noteText by remember { mutableStateOf(transaction.note ?: "") }
-    var selectedCategoryId by remember { mutableStateOf(transaction.categoryId) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = if (transaction.type == "EXPENSE") "Editar Gasto" else "Editar Ingreso",
-                color = TextPrimary,
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // Monto en COP
-                OutlinedTextField(
-                    value = amountText,
-                    onValueChange = { amountText = it },
-                    label = { Text("Monto en COP ($)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Observación o Descripción
-                OutlinedTextField(
-                    value = noteText,
-                    onValueChange = { noteText = it },
-                    label = { Text("Observación / Detalle") },
-                    placeholder = { Text("Ej: Compra en D1, Almuerzo con amigos...") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3
-                )
-
-                // Categoría
-                Text("Cambiar Categoría:", fontSize = 12.sp, color = TextSecondary)
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(availableCategories) { cat ->
-                        val isSelected = cat.id == selectedCategoryId
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) AccentPrimary else DarkSurfaceVariant,
-                            modifier = Modifier.clickable { selectedCategoryId = cat.id }
-                        ) {
-                            Text(
-                                text = cat.name,
-                                fontSize = 11.sp,
-                                color = if (isSelected) Color.White else TextPrimary,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val amount = amountText.toDoubleOrNull() ?: transaction.amount
-                    onSave(amount, selectedCategoryId, noteText)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary)
-            ) {
-                Text("Guardar Cambios")
-            }
-        },
-        dismissButton = {
-            Row {
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Default.Delete, contentDescription = "Eliminar", tint = AccentRed)
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("Cancelar", color = TextSecondary)
-                }
-            }
-        },
-        containerColor = DarkSurface
-    )
 }

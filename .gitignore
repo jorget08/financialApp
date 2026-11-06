@@ -1,0 +1,17 @@
+# Clave de firma: nunca en git
+*.keystore
+*.jks
+
+# Compilación y entorno local
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Datos locales de herramientas
+.swarm/
+.claude-flow/
