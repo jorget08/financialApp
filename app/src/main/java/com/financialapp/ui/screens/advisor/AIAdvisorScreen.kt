@@ -1,10 +1,12 @@
 package com.financialapp.ui.screens.advisor
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Warning
@@ -16,29 +18,36 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.financialapp.data.local.dao.CategoryExpenseSummary
-import com.financialapp.data.local.entities.SavingsAccountEntity
+import com.financialapp.data.local.entities.AiSuggestionEntity
 import com.financialapp.data.remote.ai.AIAssistantService
 import com.financialapp.data.remote.ai.AISettingsManager
+import com.financialapp.data.remote.ai.AdvisorPrompts
+import com.financialapp.data.remote.ai.AiMessage
+import com.financialapp.data.remote.ai.AiRequest
+import com.financialapp.data.remote.ai.SuggestionTopic
+import com.financialapp.ui.components.financeFieldColors
 import com.financialapp.ui.theme.*
 import kotlinx.coroutines.launch
+
+/** La conversación vive mientras la app esté abierta; las sugerencias sí quedan guardadas. */
+object AdvisorSession {
+    val chat = mutableStateListOf<AiMessage>()
+}
+
+private enum class AdvisorTab(val label: String) { SUGGESTIONS("Sugerencias"), CHAT("Conversar") }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AIAdvisorScreen(
-    totalIncome: Double,
-    totalExpenses: Double,
-    expensesByCategory: List<CategoryExpenseSummary>,
-    savingsAccount: SavingsAccountEntity?,
     aiService: AIAssistantService,
     settingsManager: AISettingsManager,
+    suggestions: List<AiSuggestionEntity>,
+    loadDossier: suspend () -> String,
+    onSaveSuggestion: suspend (AiSuggestionEntity) -> Unit,
+    onDeleteSuggestion: (String) -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
-    var isLoading by remember { mutableStateOf(false) }
-    var auditResult by remember { mutableStateOf<String?>(null) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-
+    var tab by remember { mutableStateOf(AdvisorTab.SUGGESTIONS) }
     val hasApiKey = remember(settingsManager) { settingsManager.isConfigured() }
 
     Scaffold(
@@ -50,7 +59,7 @@ fun AIAdvisorScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text("Asesor Financiero IA", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-                            Text("Auditoría Patrimonial & Reducción de Gastos", fontSize = 11.sp, color = TextSecondary)
+                            Text(aiService.providerModelLabel, fontSize = 11.sp, color = TextSecondary)
                         }
                     }
                 },
@@ -58,170 +67,155 @@ fun AIAdvisorScreen(
             )
         },
         containerColor = DarkBackground
-    ) { paddingValues ->
-        LazyColumn(
+    ) { padding ->
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(padding)
         ) {
-            // Verificación de API Key
+            TabRow(selectedTabIndex = tab.ordinal, containerColor = DarkBackground, contentColor = AccentPurple) {
+                AdvisorTab.entries.forEach { option ->
+                    Tab(
+                        selected = tab == option,
+                        onClick = { tab = option },
+                        text = { Text(option.label, color = if (tab == option) TextPrimary else TextSecondary) }
+                    )
+                }
+            }
             if (!hasApiKey) {
+                MissingKeyCard(settingsManager.getProvider(), onNavigateToSettings)
+            }
+            when (tab) {
+                AdvisorTab.SUGGESTIONS -> SuggestionsTab(aiService, hasApiKey, suggestions, loadDossier, onSaveSuggestion, onDeleteSuggestion)
+                AdvisorTab.CHAT -> ChatTab(aiService, hasApiKey, loadDossier)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MissingKeyCard(provider: String, onNavigateToSettings: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = AccentOrange.copy(alpha = 0.15f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Warning, contentDescription = null, tint = AccentOrange)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Falta la API Key de $provider", fontWeight = FontWeight.Bold, color = AccentOrange, fontSize = 14.sp)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Agrega tu clave de Gemini, OpenAI o Claude en Ajustes para usar el asesor.", color = TextPrimary, fontSize = 12.sp)
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = onNavigateToSettings,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentOrange),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Configurar API Key", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatTab(aiService: AIAssistantService, hasApiKey: Boolean, loadDossier: suspend () -> String) {
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    var input by remember { mutableStateOf("") }
+    var isLoading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val messages = AdvisorSession.chat
+
+    LaunchedEffect(messages.size, isLoading) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(vertical = 10.dp)
+        ) {
+            if (messages.isEmpty()) {
                 item {
+                    Text(
+                        "Pregúntame lo que quieras: \"¿será que me compro esto?\", \"¿cómo voy este mes?\", \"¿qué es un CDT?\". Conozco tus cifras, pero no los nombres ni las observaciones de tus movimientos.",
+                        color = TextSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
+            }
+            items(messages) { message ->
+                val fromUser = message.fromUser
+                Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = if (fromUser) Alignment.End else Alignment.Start) {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = AccentOrange.copy(alpha = 0.15f),
-                        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(AccentOrange)),
-                        modifier = Modifier.fillMaxWidth()
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (fromUser) AccentPrimary.copy(alpha = 0.9f) else DarkSurfaceVariant,
+                        modifier = Modifier.widthIn(max = 320.dp)
                     ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Warning, contentDescription = null, tint = AccentOrange)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("API Key no configurada", fontWeight = FontWeight.Bold, color = AccentOrange, fontSize = 14.sp)
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                "Para que el asesor pueda analizar tus ingresos, gastos y rendimientos, ingresa tu propia clave de Google Gemini u OpenAI en Ajustes.",
-                                color = TextPrimary,
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = onNavigateToSettings,
-                                colors = ButtonDefaults.buttonColors(containerColor = AccentOrange),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Configurar mi API Key ahora", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
+                        Text(message.text, color = TextPrimary, fontSize = 14.sp, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
                     }
                 }
             }
-
-            // Banner del Asesor
-            item {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = DarkSurface,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(18.dp)) {
-                        Text(
-                            text = "¿Listo para auditar tus finanzas?",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "La IA revisará tus gastos por categoría, calculará tu tasa de ahorro real y contrastará la TEA de tu banco frente a alternativas de mayor rendimiento.",
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                            lineHeight = 16.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Button(
-                            onClick = {
-                                isLoading = true
-                                errorMessage = null
-                                coroutineScope.launch {
-                                    val result = aiService.auditFinances(
-                                        totalIncome = totalIncome,
-                                        totalExpenses = totalExpenses,
-                                        expensesByCategory = expensesByCategory,
-                                        savingsAccount = savingsAccount
-                                    )
-                                    result.onSuccess { text ->
-                                        auditResult = text
-                                        isLoading = false
-                                    }.onFailure { err ->
-                                        errorMessage = err.localizedMessage ?: "Error al conectar con la IA."
-                                        isLoading = false
-                                    }
+            if (isLoading) {
+                item {
+                    Text("Pensando...", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.padding(8.dp))
+                }
+            }
+            error?.let {
+                item { Text(it, color = AccentRed, fontSize = 12.sp, modifier = Modifier.padding(8.dp)) }
+            }
+        }
+        Surface(color = DarkSurface, modifier = Modifier.fillMaxWidth().imePadding()) {
+            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    placeholder = { Text("Escribe tu pregunta...", color = TextTertiary, fontSize = 13.sp) },
+                    shape = RoundedCornerShape(24.dp),
+                    maxLines = 3,
+                    colors = financeFieldColors(),
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                FilledIconButton(
+                    onClick = {
+                        val text = input.trim()
+                        if (text.isEmpty() || isLoading) return@FilledIconButton
+                        input = ""
+                        error = null
+                        messages.add(AiMessage(true, text))
+                        isLoading = true
+                        scope.launch {
+                            val system = AdvisorPrompts.chatSystem + "\n\nESTADO ACTUAL DE SUS FINANZAS:\n" + loadDossier()
+                            val result = aiService.complete(AiRequest(system, messages.toList(), webSearch = false, deep = false))
+                            result.onSuccess { messages.add(AiMessage(false, it.text)) }
+                                .onFailure { err ->
+                                    // Se quita la pregunta para no enviar dos turnos de usuario seguidos al reintentar
+                                    messages.removeAt(messages.lastIndex)
+                                    input = text
+                                    error = err.message ?: "No se pudo obtener respuesta."
                                 }
-                            },
-                            enabled = !isLoading && hasApiKey,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentPurple)
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text("Auditando con IA...", fontSize = 14.sp)
-                            } else {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Generar Auditoría Financiera", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                            }
+                            isLoading = false
                         }
-                    }
+                    },
+                    enabled = hasApiKey && !isLoading && input.isNotBlank(),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = AccentPurple, contentColor = Color.White)
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Enviar")
                 }
-            }
-
-            // Mensaje de Error si ocurre
-            if (errorMessage != null) {
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = AccentRed.copy(alpha = 0.2f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = errorMessage ?: "",
-                            color = AccentRed,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(14.dp)
-                        )
-                    }
-                }
-            }
-
-            // Resultado de la Auditoría del Asesor
-            if (auditResult != null) {
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = DarkSurface,
-                        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(AccentPurple.copy(alpha = 0.5f))),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = "Diagnóstico del Asesor Senior",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp,
-                                    color = AccentPurple
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-                            HorizontalDivider(color = DarkBorder)
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Text(
-                                text = auditResult ?: "",
-                                fontSize = 13.sp,
-                                color = TextPrimary,
-                                lineHeight = 20.sp
-                            )
-                        }
-                    }
-                }
-            }
-
-            item {
-                Spacer(modifier = Modifier.height(30.dp))
             }
         }
     }

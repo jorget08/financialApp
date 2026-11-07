@@ -4,8 +4,10 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 import java.util.UUID
 
+@Serializable
 @Entity(tableName = "savings_accounts")
 data class SavingsAccountEntity(
     @PrimaryKey
@@ -20,6 +22,7 @@ data class SavingsAccountEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+@Serializable
 @Entity(
     tableName = "savings_deposits",
     foreignKeys = [

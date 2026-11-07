@@ -7,6 +7,10 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items as rowItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -23,14 +27,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.glance.appwidget.updateAll
 import androidx.lifecycle.lifecycleScope
+import com.financialapp.FinancialApplication
 import com.financialapp.data.local.AppDatabase
+import com.financialapp.data.local.entities.AccountEntity
 import com.financialapp.data.local.entities.CategoryEntity
-import com.financialapp.data.local.entities.TransactionEntity
+import com.financialapp.domain.engine.LoanLedger
+import com.financialapp.ui.components.AccountPicker
+import com.financialapp.ui.components.ChoiceChip
+import com.financialapp.ui.components.DateSelector
+import com.financialapp.ui.components.financeFieldColors
 import com.financialapp.ui.theme.FinancialAppTheme
 import com.financialapp.util.CurrencyFormatter
-import com.financialapp.widget.QuickExpenseGlanceWidget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
@@ -53,25 +61,36 @@ class QuickExpenseDialogActivity : ComponentActivity() {
                 QuickExpenseDialogContent(
                     initialType = initialType,
                     onDismiss = { finish() },
-                    onSave = { amount, type, categoryId, note ->
+                    onSave = { amount, type, categoryId, note, date, accountId ->
                         lifecycleScope.launch(Dispatchers.IO) {
-                            val db = AppDatabase.getInstance(applicationContext)
-                            val transaction = TransactionEntity(
+                            val app = application as FinancialApplication
+                            app.preferences.lastAccountId = accountId
+                            // El repositorio también actualiza el widget de escritorio
+                            app.repository.addMovement(
                                 amount = amount,
                                 type = type,
                                 categoryId = categoryId,
                                 note = note.ifBlank { if (type == "EXPENSE") "Gasto rápido" else "Ingreso" },
-                                source = "WIDGET",
-                                date = System.currentTimeMillis()
+                                date = date,
+                                accountId = accountId,
+                                source = "WIDGET"
                             )
-                            db.transactionDao().insertTransaction(transaction)
-
-                            // Actualizar widget de escritorio
-                            QuickExpenseGlanceWidget().updateAll(applicationContext)
 
                             withContext(Dispatchers.Main) {
                                 val label = if (type == "EXPENSE") "Gasto" else "Ingreso"
                                 Toast.makeText(applicationContext, "$label guardado: ${CurrencyFormatter.format(amount)}", Toast.LENGTH_SHORT).show()
+                                finish()
+                            }
+                        }
+                    },
+                    onSaveLoan = { amount, person, moneyOut, note, date, accountId ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val app = application as FinancialApplication
+                            app.preferences.lastAccountId = accountId
+                            app.repository.recordLoan(person, amount, moneyOut, accountId, date, note.ifBlank { null })
+
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(applicationContext, "Préstamo guardado: ${CurrencyFormatter.format(amount)}", Toast.LENGTH_SHORT).show()
                                 finish()
                             }
                         }
@@ -82,7 +101,7 @@ class QuickExpenseDialogActivity : ComponentActivity() {
     }
 
     companion object {
-        const val EXTRA_ENTRY_TYPE = "extra_entry_type" // "EXPENSE" o "INCOME"
+        const val EXTRA_ENTRY_TYPE = "extra_entry_type" // "EXPENSE", "INCOME" o "LOAN"
     }
 }
 
@@ -90,18 +109,35 @@ class QuickExpenseDialogActivity : ComponentActivity() {
 fun QuickExpenseDialogContent(
     initialType: String = "EXPENSE",
     onDismiss: () -> Unit,
-    onSave: (Double, String, String, String) -> Unit
+    onSave: (Double, String, String, String, Long, String?) -> Unit,
+    onSaveLoan: (amount: Double, person: String, moneyOut: Boolean, note: String, date: Long, accountId: String?) -> Unit
 ) {
     var entryType by remember { mutableStateOf(initialType) }
     var amountText by remember { mutableStateOf("") }
     var noteText by remember { mutableStateOf("") }
     var selectedCategoryId by remember { mutableStateOf<String?>(null) }
     var allCategories by remember { mutableStateOf<List<CategoryEntity>>(emptyList()) }
+    var accounts by remember { mutableStateOf<List<AccountEntity>>(emptyList()) }
+    var date by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var person by remember { mutableStateOf("") }
+    var moneyOut by remember { mutableStateOf(true) }
+    var knownPeople by remember { mutableStateOf<List<String>>(emptyList()) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+    var selectedAccountId by remember {
+        mutableStateOf((context.applicationContext as FinancialApplication).preferences.lastAccountId)
+    }
 
     LaunchedEffect(Unit) {
         val db = AppDatabase.getInstance(context)
+        accounts = withContext(Dispatchers.IO) { db.accountDao().active() }
+        // Elegir un nombre ya usado evita que la misma persona quede con dos grafías
+        knownPeople = withContext(Dispatchers.IO) {
+            LoanLedger.summarize(db.transactionDao().getAllEntities()).map { it.personName }
+        }
+        // La cuenta recordada puede haberse archivado
+        if (accounts.none { it.id == selectedAccountId }) selectedAccountId = null
+        withContext(Dispatchers.IO) { AppDatabase.ensureDefaultCategories(db) }
         db.categoryDao().getAllCategoriesFlow()
             .flowOn(Dispatchers.IO)
             .collect { categories ->
@@ -121,6 +157,12 @@ fun QuickExpenseDialogContent(
     }
 
     val currentAmount = amountText.toDoubleOrNull() ?: 0.0
+    val isLoan = entryType == LOAN
+    val accentColor = when (entryType) {
+        "EXPENSE" -> Color(0xFFF85149)
+        LOAN -> Color(0xFFF0883E)
+        else -> Color(0xFF238636)
+    }
 
     Box(
         modifier = Modifier
@@ -139,6 +181,7 @@ fun QuickExpenseDialogContent(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = 16.dp)
             ) {
                 // Barra Superior con Botón Cerrar
@@ -160,45 +203,34 @@ fun QuickExpenseDialogContent(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Selector Tipo: [ 🔴 Gasto | 🟢 Ingreso ]
+                // Selector Tipo: [ Gasto | Ingreso | Préstamo ]
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val isExpense = entryType == "EXPENSE"
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isExpense) Color(0xFFF85149) else Color(0xFF21262D),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(38.dp)
-                            .clickable { entryType = "EXPENSE" }
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "🔴 Gasto",
-                                fontWeight = FontWeight.Bold,
-                                color = if (isExpense) Color.White else Color.Gray,
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (!isExpense) Color(0xFF238636) else Color(0xFF21262D),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(38.dp)
-                            .clickable { entryType = "INCOME" }
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "🟢 Ingreso",
-                                fontWeight = FontWeight.Bold,
-                                color = if (!isExpense) Color.White else Color.Gray,
-                                fontSize = 13.sp
-                            )
+                    listOf(
+                        Triple("EXPENSE", "🔴 Gasto", Color(0xFFF85149)),
+                        Triple("INCOME", "🟢 Ingreso", Color(0xFF238636)),
+                        Triple(LOAN, "🤝 Préstamo", Color(0xFFF0883E))
+                    ).forEach { (type, label, color) ->
+                        val selected = entryType == type
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) color else Color(0xFF21262D),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { entryType = type }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) Color.White else Color.Gray,
+                                    fontSize = 12.sp,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
@@ -210,45 +242,55 @@ fun QuickExpenseDialogContent(
                     text = if (amountText.isEmpty()) "$ 0" else CurrencyFormatter.format(currentAmount),
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (entryType == "EXPENSE") Color(0xFFF85149) else Color(0xFF2EA043),
+                    color = accentColor,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Selector de Categorías (Chips grandes)
-                Text(
-                    text = "Categoría:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color(0xFF8B949E)
-                )
-                Spacer(modifier = Modifier.height(6.dp))
+                if (isLoan) {
+                    LoanFields(
+                        person = person,
+                        onPersonChange = { person = it },
+                        knownPeople = knownPeople,
+                        moneyOut = moneyOut,
+                        onMoneyOutChange = { moneyOut = it }
+                    )
+                } else {
+                    // Selector de Categorías (Chips grandes)
+                    Text(
+                        text = "Categoría:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFF8B949E)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
 
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.height(88.dp)
-                ) {
-                    items(filteredCategories) { category ->
-                        val isSelected = category.id == selectedCategoryId
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) (if (entryType == "EXPENSE") Color(0xFFF85149) else Color(0xFF238636)) else Color(0xFF21262D),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedCategoryId = category.id }
-                        ) {
-                            Text(
-                                text = category.name,
-                                color = if (isSelected) Color.White else Color(0xFFC9D1D9),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
-                                maxLines = 1
-                            )
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.height(88.dp)
+                    ) {
+                        items(filteredCategories) { category ->
+                            val isSelected = category.id == selectedCategoryId
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) (if (entryType == "EXPENSE") Color(0xFFF85149) else Color(0xFF238636)) else Color(0xFF21262D),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedCategoryId = category.id }
+                            ) {
+                                Text(
+                                    text = category.name,
+                                    color = if (isSelected) Color.White else Color(0xFFC9D1D9),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
@@ -275,6 +317,14 @@ fun QuickExpenseDialogContent(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                // Fecha: para registrar lo que se olvidó ayer o hace unos días
+                DateSelector(date) { date = it }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                AccountPicker(accounts, selectedAccountId, { selectedAccountId = it })
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 // Teclado Numérico con botón '000' especial para Pesos Colombianos
                 NumericKeypadCop(
                     onDigitPress = { digit ->
@@ -296,8 +346,12 @@ fun QuickExpenseDialogContent(
                     onClick = {
                         val amount = amountText.toDoubleOrNull() ?: 0.0
                         val catId = selectedCategoryId
-                        if (amount > 0.0 && catId != null) {
-                            onSave(amount, entryType, catId, noteText)
+                        if (isLoan) {
+                            if (amount > 0.0 && person.isNotBlank()) {
+                                onSaveLoan(amount, person.trim(), moneyOut, noteText, date, selectedAccountId)
+                            }
+                        } else if (amount > 0.0 && catId != null) {
+                            onSave(amount, entryType, catId, noteText, date, selectedAccountId)
                         }
                     },
                     modifier = Modifier
@@ -305,16 +359,60 @@ fun QuickExpenseDialogContent(
                         .height(48.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (entryType == "EXPENSE") Color(0xFFF85149) else Color(0xFF238636)
+                        containerColor = accentColor
                     ),
-                    enabled = currentAmount > 0.0 && selectedCategoryId != null
+                    enabled = currentAmount > 0.0 && (if (isLoan) person.isNotBlank() else selectedCategoryId != null)
                 ) {
                     Text(
-                        text = if (entryType == "EXPENSE") "✓ Guardar Gasto (1s)" else "✓ Guardar Ingreso (1s)",
+                        text = when (entryType) {
+                            "EXPENSE" -> "✓ Guardar Gasto (1s)"
+                            LOAN -> "✓ Guardar Préstamo"
+                            else -> "✓ Guardar Ingreso (1s)"
+                        },
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
+            }
+        }
+    }
+}
+
+private const val LOAN = "LOAN"
+
+@Composable
+private fun LoanFields(
+    person: String,
+    onPersonChange: (String) -> Unit,
+    knownPeople: List<String>,
+    moneyOut: Boolean,
+    onMoneyOutChange: (Boolean) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ChoiceChip("Salió plata", moneyOut) { onMoneyOutChange(true) }
+        ChoiceChip("Entró plata", !moneyOut) { onMoneyOutChange(false) }
+    }
+    Spacer(modifier = Modifier.height(4.dp))
+    Text(
+        text = if (moneyOut) "Le prestaste, o le pagas lo que le debías." else "Te pagó, o esa persona te prestó a ti.",
+        fontSize = 11.sp,
+        color = Color(0xFF8B949E)
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    OutlinedTextField(
+        value = person,
+        onValueChange = onPersonChange,
+        placeholder = { Text("Persona (ej: Camilo)", fontSize = 12.sp, color = Color.Gray) },
+        singleLine = true,
+        shape = RoundedCornerShape(8.dp),
+        colors = financeFieldColors(),
+        modifier = Modifier.fillMaxWidth()
+    )
+    if (knownPeople.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(6.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            rowItems(knownPeople) { name ->
+                ChoiceChip(name, LoanLedger.normalizeName(name) == LoanLedger.normalizeName(person)) { onPersonChange(name) }
             }
         }
     }

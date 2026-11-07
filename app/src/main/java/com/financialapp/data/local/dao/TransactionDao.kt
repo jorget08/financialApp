@@ -19,7 +19,10 @@ data class TransactionWithCategory(
     val categoryColor: String,
     val note: String?,
     val date: Long,
-    val source: String
+    val source: String,
+    val accountId: String? = null,
+    val toAccountId: String? = null,
+    val personName: String? = null
 )
 
 data class CategoryExpenseSummary(
@@ -46,13 +49,23 @@ interface TransactionDao {
     @Query("""
         SELECT t.id, t.amount, t.type, t.categoryId, c.name as categoryName, 
                c.iconName as categoryIcon, c.colorHex as categoryColor, 
-               t.note, t.date, t.source
+               t.note, t.date, t.source, t.accountId, t.toAccountId, t.personName
         FROM transactions t
         INNER JOIN categories c ON t.categoryId = c.id
         ORDER BY t.date DESC
         LIMIT 50
     """)
     fun getRecentTransactions(): Flow<List<TransactionWithCategory>>
+
+    @Query("""
+        SELECT t.id, t.amount, t.type, t.categoryId, c.name as categoryName,
+               c.iconName as categoryIcon, c.colorHex as categoryColor,
+               t.note, t.date, t.source, t.accountId, t.toAccountId, t.personName
+        FROM transactions t
+        INNER JOIN categories c ON t.categoryId = c.id
+        ORDER BY t.date DESC
+    """)
+    fun getAllTransactionsWithCategory(): Flow<List<TransactionWithCategory>>
 
     @Query("""
         SELECT COALESCE(SUM(amount), 0.0) 
@@ -77,6 +90,25 @@ interface TransactionDao {
         ORDER BY totalAmount DESC
     """)
     suspend fun getExpensesByCategorySince(startTimestamp: Long): List<CategoryExpenseSummary>
+
+    @Query("""
+        SELECT COALESCE(SUM(amount), 0.0)
+        FROM transactions
+        WHERE type = 'SAVINGS' AND date >= :startTimestamp AND date < :endTimestamp
+    """)
+    fun getTotalSavedPeriod(startTimestamp: Long, endTimestamp: Long): Flow<Double>
+
+    @Query("SELECT * FROM transactions ORDER BY date DESC")
+    fun getAllEntitiesFlow(): Flow<List<TransactionEntity>>
+
+    @Query("SELECT * FROM transactions ORDER BY date DESC")
+    suspend fun getAllEntities(): List<TransactionEntity>
+
+    @Query("SELECT COUNT(*) FROM transactions WHERE date >= :startTimestamp AND date < :endTimestamp")
+    suspend fun countBetween(startTimestamp: Long, endTimestamp: Long): Int
+
+    @Query("SELECT COUNT(*) FROM transactions WHERE accountId = :accountId OR toAccountId = :accountId")
+    suspend fun countForAccount(accountId: String): Int
 
     @Query("SELECT * FROM transactions WHERE date >= :startTimestamp ORDER BY date DESC")
     suspend fun getAllTransactionsSince(startTimestamp: Long): List<TransactionEntity>

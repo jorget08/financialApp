@@ -21,6 +21,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.financialapp.data.local.entities.AccountEntity
 import com.financialapp.data.local.entities.SavingsAccountEntity
 import com.financialapp.domain.engine.CompoundInterestEngine
 import com.financialapp.domain.model.MonthlyCompoundRecord
@@ -34,8 +35,9 @@ import java.util.Locale
 @Composable
 fun SavingsCompoundScreen(
     primaryAccount: SavingsAccountEntity?,
+    accounts: List<AccountEntity>,
     onSaveAccountConfig: (name: String, bank: String, tea: Double, initialBal: Double, monthlyDeposit: Double) -> Unit,
-    onRecordNewDeposit: (amount: Double) -> Unit
+    onRecordNewDeposit: (amount: Double, fromAccountId: String?) -> Unit
 ) {
     var selectedHorizonMonths by remember { mutableIntStateOf(12) }
     var showConfigDialog by remember { mutableStateOf(false) }
@@ -101,7 +103,7 @@ fun SavingsCompoundScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Ingresa los datos reales de tu banco en Colombia (ej: Nu Colombia 13% E.A., Lulo Bank, Pibank o tu entidad), tu saldo inicial y cuánto planeas ahorrar mes a mes para calcular tus proyecciones exactas.",
+                            text = "Ingresa los datos reales de tu banco en Colombia (tu entidad y la tasa E.A. que te da hoy), tu saldo inicial y cuánto planeas ahorrar mes a mes para calcular tus proyecciones exactas.",
                             fontSize = 13.sp,
                             color = TextSecondary,
                             textAlign = TextAlign.Center,
@@ -328,8 +330,9 @@ fun SavingsCompoundScreen(
         RecordDepositDialogCop(
             defaultAmount = primaryAccount.plannedMonthlyDeposit,
             onDismiss = { showDepositDialog = false },
-            onConfirm = { amount ->
-                onRecordNewDeposit(amount)
+            accounts = accounts,
+            onConfirm = { amount, fromAccountId ->
+                onRecordNewDeposit(amount, fromAccountId)
                 showDepositDialog = false
             }
         )
@@ -458,50 +461,6 @@ fun SavingsConfigDialogCop(
                 colors = ButtonDefaults.buttonColors(containerColor = AccentPurple)
             ) {
                 Text("Guardar mis Números")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancelar", color = TextSecondary)
-            }
-        },
-        containerColor = DarkSurface
-    )
-}
-
-@Composable
-fun RecordDepositDialogCop(
-    defaultAmount: Double,
-    onDismiss: () -> Unit,
-    onConfirm: (Double) -> Unit
-) {
-    var amountText by remember { mutableStateOf(defaultAmount.toLong().toString()) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Registrar Depósito a Cuenta", color = TextPrimary, fontWeight = FontWeight.Bold) },
-        text = {
-            Column {
-                Text("Monto en pesos que acabas de transferir a tu cuenta de ahorros:", fontSize = 13.sp, color = TextSecondary)
-                Spacer(modifier = Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = amountText,
-                    onValueChange = { amountText = it },
-                    label = { Text("Monto depositado (COP $)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val amount = amountText.toDoubleOrNull() ?: 0.0
-                    if (amount > 0) onConfirm(amount)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = AccentPrimary)
-            ) {
-                Text("Registrar Aporte")
             }
         },
         dismissButton = {

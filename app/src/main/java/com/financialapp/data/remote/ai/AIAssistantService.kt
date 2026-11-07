@@ -1,156 +1,164 @@
 package com.financialapp.data.remote.ai
 
-import com.financialapp.data.local.dao.CategoryExpenseSummary
-import com.financialapp.data.local.entities.SavingsAccountEntity
 import com.financialapp.domain.engine.ParsedTransactionResult
 import com.financialapp.domain.engine.TransactionType
-import com.financialapp.util.CurrencyFormatter
-import com.google.ai.client.generativeai.GenerativeModel
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.android.Android
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
+
+data class AiMessage(val fromUser: Boolean, val text: String)
+
+data class AiRequest(
+    val system: String,
+    val messages: List<AiMessage>,
+    val webSearch: Boolean = false,
+    val deep: Boolean = true
+)
 
 /**
- * Servicio Integrador de Inteligencia Artificial para el Asesor Financiero.
- * Configurado con modelos de última generación (Gemini 2.5 Flash / Pro).
- * Especializado en finanzas personales para Colombia (COP), cuentas de alto rendimiento
- * (ej. Nu Cajitas 13% E.A., Lulo Bank, Pibank, CDTs) y optimización del costo de vida.
+ * Asesor con el proveedor elegido en Ajustes. Antes siempre se llamaba a Gemini, aunque
+ * el usuario hubiera elegido OpenAI: ahora cada proveedor usa su propia clave y API.
  */
 class AIAssistantService(
     private val settingsManager: AISettingsManager
 ) {
 
-    private val systemInstruction = """
-        Eres un Asesor Financiero Senior de élite y planificador patrimonial especializado en finanzas personales en Colombia.
-        Tu moneda de trabajo es el Peso Colombiano (COP).
-        
-        TUS PRINCIPIOS Y REGLAS FUNDAMENTALES:
-        1. Contexto Colombiano Actual:
-           - Conoces las cuentas de ahorro de alto rendimiento reguladas por la Superfinanciera en Colombia (ej: Nu Colombia con Cajitas al 13% E.A., Lulo Bank al 13% E.A., Pibank al 12% E.A., RappiPay, CDTs de entidades vigiladas).
-           - Conoces el impuesto del 4x1000 (GMF) y recuerdas la importancia de tener una cuenta exenta.
-        2. Sinceridad absoluta:
-           - Si el usuario tiene fugas de capital en "Entretenimiento y Ocio", salidas o compras impulsivas, indícaselo con cifras exactas en pesos colombianos (COP).
-           - Si en "Casa y Servicios" o "Hogar" hay gastos elevados, sugiere alternativas prácticas de optimización (ej: comprar básicos en D1/Ara, revisar planes de telecomunicaciones).
-        3. Tasa de Ahorro:
-           - Evalúa el ratio (Ingresos - Gastos) / Ingresos. Si es menor al 20%, enciende las alarmas de ahorro.
-        4. Cuenta de Ahorros e Interés Compuesto:
-           - Si su cuenta de ahorros ofrece una tasa E.A. menor al 10% - 12% E.A., compárala de inmediato con las alternativas de alto rendimiento disponibles en el mercado colombiano para que su dinero no pierda contra la inflación.
-        5. Formato de Salida:
-           - Siempre entrega 3 consejos concretos, prácticos e inmediatos para recortar gastos esta semana en Colombia.
-           - Entrega 1 meta estratégica para su cuenta de ahorros a 12 meses con interés compuesto.
-        6. Tono: Profesional, directo, empático pero estricto en la disciplina financiera.
-    """.trimIndent()
-
-    /**
-     * Realiza una auditoría exhaustiva del mes y entrega un diagnóstico con recomendaciones.
-     */
-    suspend fun auditFinances(
-        totalIncome: Double,
-        totalExpenses: Double,
-        expensesByCategory: List<CategoryExpenseSummary>,
-        savingsAccount: SavingsAccountEntity?
-    ): Result<String> = withContext(Dispatchers.IO) {
-        val apiKey = settingsManager.getApiKey()
-        if (apiKey.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("No se ha configurado la API Key de IA en Ajustes."))
-        }
-
-        try {
-            val netSavings = totalIncome - totalExpenses
-            val savingsRate = if (totalIncome > 0) (netSavings / totalIncome) * 100 else 0.0
-
-            val categoriesDossier = expensesByCategory.joinToString("\n") {
-                "- ${it.categoryName}: ${CurrencyFormatter.format(it.totalAmount)} (${it.transactionCount} registros)"
+    private val http by lazy {
+        HttpClient(Android) {
+            engine {
+                connectTimeout = 30_000
+                socketTimeout = 300_000
             }
+        }
+    }
 
-            val savingsDossier = savingsAccount?.let {
-                "Banco: ${it.bankName} | Saldo Actual: ${CurrencyFormatter.format(it.initialBalance)} | Tasa E.A.: ${it.teaRate}% E.A. | Aporte mensual planeado: ${CurrencyFormatter.format(it.plannedMonthlyDeposit)}"
-            } ?: "Actualmente el usuario no ha configurado una cuenta de ahorro formal."
+    val providerModelLabel: String get() = "${settingsManager.getProvider()} • ${settingsManager.getModelName()}"
 
-            val userPrompt = """
-                AQUÍ TIENES MI DOSSIER FINANCIERO DEL MES (EN PESOS COLOMBIANOS - COP):
-                
-                - Ingresos Totales: ${CurrencyFormatter.format(totalIncome)}
-                - Gastos Totales: ${CurrencyFormatter.format(totalExpenses)}
-                - Balance Neto Disponible: ${CurrencyFormatter.format(netSavings)}
-                - Tasa de Ahorro Real: ${String.format("%.1f", savingsRate)}%
-                
-                DESGLOSE DE GASTOS POR CATEGORÍA:
-                $categoriesDossier
-                
-                ESTADO DE CUENTA DE AHORROS:
-                $savingsDossier
-                
-                Por favor, como mi Asesor Financiero en Colombia:
-                1. ¿Dónde están mis mayores excesos o fugas de dinero este mes?
-                2. ¿Qué opinas de mi tasa de ahorro y del rendimiento que me da mi banco? ¿Qué cuentas o instrumentos en Colombia me recomendarías para rentabilizar mejor mis ahorros?
-                3. Dame 3 acciones prácticas para reducir costos esta misma semana y 1 meta para mis ahorros a 12 meses.
-            """.trimIndent()
-
-            val generativeModel = GenerativeModel(
-                modelName = settingsManager.getModelName(),
-                apiKey = apiKey,
-                systemInstruction = com.google.ai.client.generativeai.type.content {
-                    text(systemInstruction)
+    suspend fun complete(request: AiRequest): Result<AiAnswer> = withContext(Dispatchers.IO) {
+        val provider = settingsManager.getProvider()
+        val apiKey = settingsManager.getApiKey(provider)
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(AiException("No has configurado la API Key de $provider en Ajustes."))
+        }
+        val model = settingsManager.getModelName()
+        try {
+            Result.success(
+                when (provider) {
+                    AISettingsManager.PROVIDER_CLAUDE -> ClaudeClient.complete(apiKey, model, request)
+                    AISettingsManager.PROVIDER_OPENAI -> callOpenAi(apiKey, model, request)
+                    else -> callGemini(apiKey, model, request)
                 }
             )
-
-            val response = generativeModel.generateContent(userPrompt)
-            val responseText = response.text ?: "No se recibió respuesta del modelo."
-            Result.success(responseText)
-        } catch (e: Exception) {
+        } catch (e: AiException) {
             Result.failure(e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(AiException("No se pudo conectar con $provider. Revisa tu internet e intenta de nuevo."))
         }
+    }
+
+    private suspend fun callGemini(apiKey: String, model: String, request: AiRequest): AiAnswer {
+        val body = buildJsonObject {
+            putJsonObject("system_instruction") {
+                putJsonArray("parts") { addJsonObject { put("text", request.system) } }
+            }
+            putJsonArray("contents") {
+                request.messages.forEach { message ->
+                    addJsonObject {
+                        put("role", if (message.fromUser) "user" else "model")
+                        putJsonArray("parts") { addJsonObject { put("text", message.text) } }
+                    }
+                }
+            }
+            if (request.webSearch) {
+                putJsonArray("tools") { addJsonObject { putJsonObject("google_search") {} } }
+            }
+        }
+        val response = http.post("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent") {
+            header("x-goog-api-key", apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(body.toString())
+        }
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess()) throw httpError("Gemini", response.status.value, text)
+        return AiResponseParsers.parseGemini(text)
+    }
+
+    private suspend fun callOpenAi(apiKey: String, model: String, request: AiRequest): AiAnswer {
+        val body = buildJsonObject {
+            put("model", model)
+            put("instructions", request.system)
+            putJsonArray("input") {
+                request.messages.forEach { message ->
+                    addJsonObject {
+                        put("role", if (message.fromUser) "user" else "assistant")
+                        put("content", message.text)
+                    }
+                }
+            }
+            if (request.webSearch) {
+                putJsonArray("tools") { addJsonObject { put("type", "web_search") } }
+            }
+        }
+        val response = http.post("https://api.openai.com/v1/responses") {
+            header("Authorization", "Bearer $apiKey")
+            contentType(ContentType.Application.Json)
+            setBody(body.toString())
+        }
+        val text = response.bodyAsText()
+        if (!response.status.isSuccess()) throw httpError("OpenAI", response.status.value, text)
+        return AiResponseParsers.parseOpenAi(text)
+    }
+
+    private fun httpError(provider: String, status: Int, body: String): AiException {
+        val detail = AiResponseParsers.parseErrorMessage(body)
+        return AiException(
+            when (status) {
+                400, 401, 403 -> "$provider rechazó la solicitud. Revisa la API Key y el modelo en Ajustes." + (detail?.let { "\n$it" } ?: "")
+                404 -> "$provider no encontró ese modelo. Elige otro en Ajustes."
+                429 -> "$provider alcanzó el límite de uso de tu cuenta. Intenta en un momento."
+                else -> "$provider devolvió un error ($status)."
+            }
+        )
     }
 
     /**
      * Fallback por IA para interpretar textos complejos cuando la expresión regular local falla.
      */
-    suspend fun parseComplexTransaction(text: String): Result<ParsedTransactionResult> = withContext(Dispatchers.IO) {
-        val apiKey = settingsManager.getApiKey()
-        if (apiKey.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("API Key requerida"))
-        }
-
-        try {
-            val prompt = """
-                Analiza la siguiente frase sobre gastos o ingresos en Colombia (Pesos Colombianos - COP) y extrae la información en JSON:
-                Frase: "$text"
-                
-                Devuelve ÚNICAMENTE un JSON con esta estructura exacta sin texto adicional:
-                {
-                   "type": "EXPENSE" o "INCOME",
-                   "amount": 50000.0,
-                   "concept": "pago de recibo",
-                   "category": "Casa y Servicios" (o Hogar, Salud y Bienestar, Entretenimiento y Ocio, Transporte, Otros Gastos, Sueldo / Salario, Honorarios, Inversiones)
-                }
-            """.trimIndent()
-
-            val generativeModel = GenerativeModel(
-                modelName = settingsManager.getModelName(),
-                apiKey = apiKey
-            )
-
-            val response = generativeModel.generateContent(prompt)
-            val jsonText = response.text?.replace("```json", "")?.replace("```", "")?.trim() ?: "{}"
-            val json = JSONObject(jsonText)
-
-            val typeStr = json.optString("type", "EXPENSE")
-            val amount = json.optDouble("amount", 0.0)
-            val concept = json.optString("concept", text)
-            val category = json.optString("category", "Otros Gastos")
-
-            Result.success(
+    suspend fun parseComplexTransaction(text: String): Result<ParsedTransactionResult> {
+        val prompt = """
+            Analiza esta frase sobre gastos o ingresos en Colombia (COP) y devuelve ÚNICAMENTE un JSON:
+            {"type": "EXPENSE" o "INCOME", "amount": 50000.0, "concept": "pago de recibo", "category": "Casa y Servicios" (o Hogar, Salud y Bienestar, Entretenimiento y Ocio, Transporte, Otros Gastos, Sueldo / Salario, Honorarios, Inversiones)}
+            Frase: "$text"
+        """.trimIndent()
+        return complete(AiRequest("Extraes datos de frases en español.", listOf(AiMessage(true, prompt)), deep = false))
+            .mapCatching { answer ->
+                val json = Json.parseToJsonElement(answer.text.substringAfter("{").substringBeforeLast("}").let { "{$it}" }).jsonObject
+                val type = json["type"]?.jsonPrimitive?.content.orEmpty()
                 ParsedTransactionResult(
-                    type = if (typeStr.equals("INCOME", ignoreCase = true)) TransactionType.INCOME else TransactionType.EXPENSE,
-                    amount = amount,
-                    concept = concept,
-                    suggestedCategoryName = category,
+                    type = if (type.equals("INCOME", ignoreCase = true)) TransactionType.INCOME else TransactionType.EXPENSE,
+                    amount = json["amount"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0,
+                    concept = json["concept"]?.jsonPrimitive?.content ?: text,
+                    suggestedCategoryName = json["category"]?.jsonPrimitive?.content ?: "Otros Gastos",
                     isConfident = true
                 )
-            )
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+            }
     }
 }
