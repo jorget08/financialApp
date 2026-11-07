@@ -60,19 +60,31 @@ object AdvisorDossier {
         }
 
         val savings = input.savings
+        val assignedToGoals = input.goals.sumOf { it.savedAmount }
         if (savings != null) {
+            val unassigned = (savings.initialBalance - assignedToGoals).coerceAtLeast(0.0)
             appendLine("Cuenta de ahorro: ${savings.bankName}, saldo ${money(savings.initialBalance)}, tasa ${savings.teaRate}% E.A., aporte mensual planeado ${money(savings.plannedMonthlyDeposit)}")
-            MonthlyReview.emergencyMonths(savings.initialBalance, averageExpenses)?.let {
-                appendLine("El ahorro cubre ${String.format(Locale.US, "%.1f", it)} meses de gastos (promedio mensual ${money(averageExpenses)}).")
+            if (assignedToGoals > 0) {
+                appendLine("De ese saldo: ${money(assignedToGoals)} asignados a metas y ${money(unassigned)} sin asignar.")
+            }
+            if (assignedToGoals > savings.initialBalance) {
+                appendLine("Ojo: lo asignado a metas supera el saldo de la cuenta; alguna de esas cifras está desactualizada.")
+            }
+            MonthlyReview.emergencyMonths(unassigned, averageExpenses)?.let {
+                appendLine("Lo no asignado a metas cubre ${String.format(Locale.US, "%.1f", it)} meses de gastos (promedio mensual ${money(averageExpenses)}).")
             }
         } else {
             appendLine("Cuenta de ahorro: no configurada.")
         }
 
         if (input.goals.isNotEmpty()) {
-            appendLine("Metas, en su orden de prioridad:")
-            input.goals.forEach { goal ->
+            // Orden alfabético: el orden de creación no debe leerse como una preferencia
+            appendLine("Metas, sin prioridad definida (el orden de esta lista no indica preferencia):")
+            input.goals.sortedBy { it.name.lowercase() }.forEach { goal ->
                 appendLine("- ${goal.name}: objetivo ${money(goal.targetAmount)}, lleva ${money(goal.savedAmount)}")
+            }
+            if (savings != null && assignedToGoals > 0) {
+                appendLine("Lo que lleva en las metas está dentro de la cuenta de ahorro: no es plata adicional.")
             }
         } else {
             appendLine("Metas: no ha registrado metas.")
